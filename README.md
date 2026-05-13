@@ -22,6 +22,12 @@ The project covers these operations:
 ## Run locally
 
 The Gradle Wrapper is included, so Gradle does not need to be installed first.
+Make sure these wrapper files are committed to git:
+
+- `gradlew`
+- `gradlew.bat`
+- `gradle/wrapper/gradle-wrapper.properties`
+- `gradle/wrapper/gradle-wrapper.jar`
 
 Generate the consumer pact file:
 
