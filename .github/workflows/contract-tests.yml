@@ -10,6 +10,9 @@ on:
 jobs:
   pact:
     runs-on: ubuntu-latest
+    env:
+      PACT_BROKER_BASE_URL: ${{ secrets.PACT_BROKER_BASE_URL }}
+      PACT_BROKER_TOKEN: ${{ secrets.PACT_BROKER_TOKEN }}
 
     steps:
       - name: Check out repository
@@ -38,8 +41,5 @@ jobs:
             build/pacts
 
       - name: Publish contracts to Pact Broker
-        if: ${{ github.event_name != 'pull_request' && secrets.PACT_BROKER_BASE_URL != '' && secrets.PACT_BROKER_TOKEN != '' }}
+        if: ${{ github.event_name != 'pull_request' && env.PACT_BROKER_BASE_URL != '' && env.PACT_BROKER_TOKEN != '' }}
         run: ./gradlew pactPublish
-        env:
-          PACT_BROKER_BASE_URL: ${{ secrets.PACT_BROKER_BASE_URL }}
-          PACT_BROKER_TOKEN: ${{ secrets.PACT_BROKER_TOKEN }}
