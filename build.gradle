@@ -1,0 +1,315 @@
+plugins {
+    id 'java'
+    id 'au.com.dius.pact' version '4.6.20'
+}
+
+import groovy.json.JsonSlurper
+import groovy.xml.MarkupBuilder
+
+group = 'com.example.contract'
+version = System.getenv('GITHUB_SHA') ?: 'local'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+dependencies {
+    implementation 'com.fasterxml.jackson.core:jackson-databind:2.17.2'
+
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.3'
+    testImplementation 'org.assertj:assertj-core:3.26.3'
+    testImplementation 'au.com.dius.pact.consumer:junit5:4.6.20'
+    testImplementation 'au.com.dius.pact.provider:junit5:4.6.20'
+}
+
+def pactOutputDir = layout.buildDirectory.dir('pacts')
+def pactDashboardDir = layout.buildDirectory.dir('reports/pact-dashboard')
+
+tasks.withType(Test).configureEach {
+    useJUnitPlatform()
+    testLogging {
+        events 'passed', 'skipped', 'failed'
+    }
+}
+
+tasks.register('consumerPactTest', Test) {
+    description = 'Generates Pact contracts from the consumer tests.'
+    group = 'verification'
+    include '**/*ConsumerPactTest.class'
+    systemProperty 'pact.rootDir', pactOutputDir.get().asFile.absolutePath
+    doFirst {
+        delete pactOutputDir
+    }
+}
+
+tasks.register('providerPactTest', Test) {
+    description = 'Verifies generated Pact contracts against the public JSONPlaceholder API.'
+    group = 'verification'
+    dependsOn tasks.named('consumerPactTest')
+    include '**/*ProviderPactVerificationTest.class'
+    systemProperty 'pact.rootDir', pactOutputDir.get().asFile.absolutePath
+    systemProperty 'pact.verifier.publishResults', System.getenv('PACT_PUBLISH_VERIFICATION_RESULTS') ?: 'false'
+    systemProperty 'pact.provider.version', System.getenv('GITHUB_SHA') ?: 'local'
+    systemProperty 'pact.provider.branch', System.getenv('GITHUB_REF_NAME') ?: 'local'
+}
+
+tasks.named('test') {
+    description = 'Runs all contract tests.'
+    exclude '**/*ConsumerPactTest.class'
+    exclude '**/*ProviderPactVerificationTest.class'
+    dependsOn tasks.named('consumerPactTest'), tasks.named('providerPactTest')
+    finalizedBy 'pactDashboard'
+}
+
+tasks.register('pactDashboard') {
+    description = 'Generates a Pact dashboard with pact metadata and test results.'
+    group = 'verification'
+    dependsOn tasks.named('consumerPactTest'), tasks.named('providerPactTest')
+
+    inputs.dir pactOutputDir
+    inputs.dir layout.buildDirectory.dir('test-results')
+    outputs.dir pactDashboardDir
+
+    doLast {
+        def dashboardDir = pactDashboardDir.get().asFile
+        def dashboardFile = new File(dashboardDir, 'index.html')
+        dashboardDir.mkdirs()
+
+        def pactFiles = pactOutputDir.get().asFile.listFiles({ file -> file.name.endsWith('.json') } as FileFilter)?.sort { it.name } ?: []
+        def pacts = pactFiles.collect { file ->
+            def json = new JsonSlurper().parse(file)
+            [
+                file        : file.name,
+                consumer    : json.consumer?.name ?: 'unknown',
+                provider    : json.provider?.name ?: 'unknown',
+                specVersion : json.metadata?.pactSpecification?.version ?: 'unknown',
+                interactions: (json.interactions ?: []).collect { interaction ->
+                    [
+                        method     : interaction.request?.method ?: '',
+                        path       : interaction.request?.path ?: '',
+                        description: interaction.description ?: '',
+                        status     : interaction.response?.status ?: ''
+                    ]
+                }
+            ]
+        }
+
+        def testSuites = fileTree(layout.buildDirectory.dir('test-results')).matching {
+            include '**/TEST-*.xml'
+        }.files.sort { it.path }.collect { file ->
+            def xml = new XmlSlurper().parse(file)
+            [
+                task    : file.parentFile.name,
+                name    : xml.@name.text(),
+                tests   : xml.@tests.text().toInteger(),
+                failures: xml.@failures.text().toInteger(),
+                errors  : xml.@errors.text().toInteger(),
+                skipped : xml.@skipped.text().toInteger(),
+                time    : xml.@time.text(),
+                cases   : xml.testcase.collect { testCase ->
+                    [
+                        name     : testCase.@name.text(),
+                        className: testCase.@classname.text(),
+                        time     : testCase.@time.text(),
+                        status   : testCase.failure.size() || testCase.error.size() ? 'FAILED' : 'PASSED'
+                    ]
+                }
+            ]
+        }
+
+        def totals = [
+            tests   : testSuites.sum { it.tests } ?: 0,
+            failures: testSuites.sum { it.failures } ?: 0,
+            errors  : testSuites.sum { it.errors } ?: 0,
+            skipped : testSuites.sum { it.skipped } ?: 0
+        ]
+        def passed = totals.tests - totals.failures - totals.errors - totals.skipped
+        def generatedAt = new Date().format("yyyy-MM-dd HH:mm:ss z")
+
+        dashboardFile.withWriter('UTF-8') { writer ->
+            def html = new MarkupBuilder(writer)
+            html.doubleQuotes = true
+            html.html {
+                head {
+                    meta(charset: 'utf-8')
+                    meta(name: 'viewport', content: 'width=device-width, initial-scale=1')
+                    title('Pact Contract Dashboard')
+                    style('''
+                        body { margin: 0; font-family: Arial, sans-serif; color: #1f2933; background: #f6f8fa; }
+                        header { background: #17212b; color: white; padding: 28px 36px; }
+                        main { padding: 28px 36px 48px; }
+                        h1, h2 { margin: 0; }
+                        h2 { margin-top: 28px; margin-bottom: 12px; }
+                        .meta { margin-top: 8px; color: #cbd5e1; }
+                        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; }
+                        .card { background: white; border: 1px solid #d8dee4; border-radius: 8px; padding: 16px; }
+                        .label { color: #637083; font-size: 13px; }
+                        .value { font-size: 28px; font-weight: 700; margin-top: 6px; }
+                        table { width: 100%; border-collapse: collapse; background: white; border: 1px solid #d8dee4; border-radius: 8px; overflow: hidden; }
+                        th, td { padding: 10px 12px; border-bottom: 1px solid #e5e7eb; text-align: left; vertical-align: top; }
+                        th { background: #eef2f6; font-size: 13px; color: #455466; }
+                        tr:last-child td { border-bottom: 0; }
+                        .status { display: inline-block; padding: 3px 8px; border-radius: 999px; font-size: 12px; font-weight: 700; }
+                        .passed { background: #dcfce7; color: #166534; }
+                        .failed { background: #fee2e2; color: #991b1b; }
+                        .muted { color: #637083; }
+                    ''')
+                }
+                body {
+                    header {
+                        h1('Pact Contract Dashboard')
+                        div(class: 'meta', "Generated ${generatedAt}")
+                    }
+                    main {
+                        div(class: 'grid') {
+                            div(class: 'card') {
+                                div(class: 'label', 'Total tests')
+                                div(class: 'value', totals.tests)
+                            }
+                            div(class: 'card') {
+                                div(class: 'label', 'Passed')
+                                div(class: 'value', passed)
+                            }
+                            div(class: 'card') {
+                                div(class: 'label', 'Failed')
+                                div(class: 'value', totals.failures + totals.errors)
+                            }
+                            div(class: 'card') {
+                                div(class: 'label', 'Pact files')
+                                div(class: 'value', pacts.size())
+                            }
+                        }
+
+                        h2('Pact Versions')
+                        table {
+                            thead {
+                                tr {
+                                    th('Consumer')
+                                    th('Provider')
+                                    th('Pact spec version')
+                                    th('Interactions')
+                                    th('File')
+                                }
+                            }
+                            tbody {
+                                pacts.each { pact ->
+                                    tr {
+                                        td(pact.consumer)
+                                        td(pact.provider)
+                                        td(pact.specVersion)
+                                        td(pact.interactions.size())
+                                        td(pact.file)
+                                    }
+                                }
+                            }
+                        }
+
+                        h2('Operations')
+                        table {
+                            thead {
+                                tr {
+                                    th('Method')
+                                    th('Path')
+                                    th('Description')
+                                    th('Expected status')
+                                }
+                            }
+                            tbody {
+                                pacts.collectMany { it.interactions }.each { interaction ->
+                                    tr {
+                                        td(interaction.method)
+                                        td(interaction.path)
+                                        td(interaction.description)
+                                        td(interaction.status)
+                                    }
+                                }
+                            }
+                        }
+
+                        h2('Test Results')
+                        table {
+                            thead {
+                                tr {
+                                    th('Task')
+                                    th('Suite')
+                                    th('Tests')
+                                    th('Passed')
+                                    th('Failed')
+                                    th('Skipped')
+                                    th('Time')
+                                }
+                            }
+                            tbody {
+                                testSuites.each { suite ->
+                                    def suiteFailed = suite.failures + suite.errors
+                                    tr {
+                                        td(suite.task)
+                                        td(suite.name)
+                                        td(suite.tests)
+                                        td(suite.tests - suiteFailed - suite.skipped)
+                                        td {
+                                            span(class: "status ${suiteFailed ? 'failed' : 'passed'}", suiteFailed ? suiteFailed : '0')
+                                        }
+                                        td(suite.skipped)
+                                        td("${suite.time}s")
+                                    }
+                                }
+                            }
+                        }
+
+                        h2('Test Cases')
+                        table {
+                            thead {
+                                tr {
+                                    th('Task')
+                                    th('Test case')
+                                    th('Class')
+                                    th('Status')
+                                    th('Time')
+                                }
+                            }
+                            tbody {
+                                testSuites.each { suite ->
+                                    suite.cases.each { testCase ->
+                                        tr {
+                                            td(suite.task)
+                                            td(testCase.name)
+                                            td(testCase.className)
+                                            td {
+                                                span(class: "status ${testCase.status == 'PASSED' ? 'passed' : 'failed'}", testCase.status)
+                                            }
+                                            td("${testCase.time}s")
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        p(class: 'muted', "Open this file locally at ${dashboardFile.absolutePath}")
+                    }
+                }
+            }
+        }
+
+        logger.lifecycle("Pact dashboard generated at: ${dashboardFile.absolutePath}")
+    }
+}
+
+pact {
+    publish {
+        pactDirectory = pactOutputDir.get().asFile.absolutePath
+        pactBrokerUrl = System.getenv('PACT_BROKER_BASE_URL') ?: ''
+        pactBrokerToken = System.getenv('PACT_BROKER_TOKEN') ?: ''
+        consumerVersion = System.getenv('GITHUB_SHA') ?: project.version.toString()
+        consumerBranch = System.getenv('GITHUB_REF_NAME') ?: 'local'
+    }
+}
+
+tasks.named('pactPublish') {
+    dependsOn tasks.named('consumerPactTest')
+    onlyIf {
+        System.getenv('PACT_BROKER_BASE_URL') && System.getenv('PACT_BROKER_TOKEN')
+    }
+}

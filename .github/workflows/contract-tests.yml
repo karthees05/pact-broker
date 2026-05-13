@@ -1,0 +1,45 @@
+name: Contract tests
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  pact:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Run Pact contract tests
+        run: ./gradlew test
+
+      - name: Upload Pact dashboard
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: pact-dashboard
+          path: |
+            build/reports/pact-dashboard
+            build/reports/tests
+            build/pacts
+
+      - name: Publish contracts to Pact Broker
+        if: ${{ github.event_name != 'pull_request' && secrets.PACT_BROKER_BASE_URL != '' && secrets.PACT_BROKER_TOKEN != '' }}
+        run: ./gradlew pactPublish
+        env:
+          PACT_BROKER_BASE_URL: ${{ secrets.PACT_BROKER_BASE_URL }}
+          PACT_BROKER_TOKEN: ${{ secrets.PACT_BROKER_TOKEN }}
