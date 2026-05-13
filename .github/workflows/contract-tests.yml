@@ -29,9 +29,21 @@ jobs:
 
       - name: Validate Gradle Wrapper
         run: |
-          test -f gradle/wrapper/gradle-wrapper.jar
-          test -f gradle/wrapper/gradle-wrapper.properties
-          test -x gradlew
+          ls -la
+          ls -la gradle/wrapper || true
+
+          if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
+            echo "::error file=gradle/wrapper/gradle-wrapper.jar::Gradle Wrapper jar is missing. Commit and push gradle/wrapper/gradle-wrapper.jar."
+            exit 1
+          fi
+
+          if [ ! -f gradle/wrapper/gradle-wrapper.properties ]; then
+            echo "::error file=gradle/wrapper/gradle-wrapper.properties::Gradle Wrapper properties file is missing."
+            exit 1
+          fi
+
+          chmod +x gradlew
+          ./gradlew --version
 
       - name: Run Pact contract tests
         run: ./gradlew test
