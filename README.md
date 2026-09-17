@@ -8,12 +8,42 @@ verification runs against a local JSONPlaceholder-compatible test provider so
 the suite is reliable locally and in GitHub Actions without depending on a live
 third-party API.
 
-The project covers these operations:
+The reusable sample API contract covers the common HTTP API operations:
 
+- `GET /posts`
 - `GET /posts/1`
 - `POST /posts`
 - `PUT /posts/1`
 - `PATCH /posts/1`
+- `DELETE /posts/1`
+
+Consumer tests run against Pact's mock server and generate contracts. Provider
+verification starts a local mock provider that implements the same API shape,
+which keeps the suite deterministic and fast while still exercising Pact's
+consumer/provider workflow.
+
+## Reusable configuration
+
+Change the API identity and resource paths in:
+
+```text
+src/main/java/com/example/contract/ContractSettings.java
+```
+
+Change reusable sample payloads and Pact body matchers in:
+
+```text
+src/test/java/com/example/contract/ContractTestFixtures.java
+```
+
+Change local provider routes in:
+
+```text
+src/test/java/com/example/contract/MockJsonPlaceholderProvider.java
+```
+
+For a real provider, keep the generated pact flow and replace the mock provider
+target in `JsonPlaceholderProviderPactVerificationTest` with your service URL.
 
 ## Requirements
 
